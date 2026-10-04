@@ -85,6 +85,10 @@ function App() {
    * Prevents the same sentence from being submitted twice.
    */
   const submittedTranscriptRef = useRef("");
+  const conversationActiveRef = useRef(false);
+  const recognitionActiveRef = useRef(false);
+  const speechRestartTimerRef = useRef(null);
+  const mouseGlowRef = useRef(null);
 
   const selectedMood = moods.find((mood) => mood.id === selected);
 
@@ -102,6 +106,25 @@ function App() {
   useEffect(() => {
     sendingRef.current = sending;
   }, [sending]);
+
+  /*
+   * Mouse-follow glow.
+   */
+  useEffect(() => {
+    const handleMouseMove = (event) => {
+      const glow = mouseGlowRef.current;
+      if (!glow) return;
+
+      glow.style.left = `${event.clientX}px`;
+      glow.style.top = `${event.clientY}px`;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+    };
+  }, []);
 
   /*
    * Speech recognition setup.
@@ -124,6 +147,7 @@ useEffect(() => {
   recognition.lang = "en-US";
 
   recognition.onstart = () => {
+    recognitionActiveRef.current = true;
     setListening(true);
   };
 
@@ -187,6 +211,7 @@ useEffect(() => {
   };
 
   recognition.onerror = (event) => {
+    recognitionActiveRef.current = false;
     console.error(
       "Speech recognition error:",
       event.error
@@ -196,6 +221,7 @@ useEffect(() => {
   };
 
   recognition.onend = () => {
+    recognitionActiveRef.current = false;
     setListening(false);
   };
 
@@ -212,6 +238,7 @@ useEffect(() => {
     }
 
     recognitionRef.current = null;
+    recognitionActiveRef.current = false;
   };
 }, []);
   /*
@@ -223,6 +250,7 @@ useEffect(() => {
     }
 
     setStarting(true);
+    conversationActiveRef.current = false;
 
     try {
       const response = await fetch(
@@ -279,6 +307,7 @@ useEffect(() => {
       submittedTranscriptRef.current = "";
 
       setScreen("conversation");
+      conversationActiveRef.current = true;
 
       speakText(greeting);
     } catch (error) {
@@ -408,6 +437,35 @@ useEffect(() => {
   /*
    * Start microphone listening.
    */
+  function startListening() {
+    if (
+      !speechSupported ||
+      !conversationActiveRef.current ||
+      !sessionIdRef.current ||
+      !conversationModeRef.current ||
+      sendingRef.current ||
+      !recognitionRef.current
+    ) {
+      return;
+    }
+
+    if (recognitionActiveRef.current) {
+      return;
+    }
+
+    transcriptRef.current = "";
+    submittedTranscriptRef.current = "";
+    setTranscript("");
+
+    try {
+      recognitionRef.current.start();
+    } catch (error) {
+      console.debug("Microphone start error:", error);
+      recognitionActiveRef.current = false;
+      setListening(false);
+    }
+  }
+
   function toggleListening() {
     if (!speechSupported) {
       alert(
@@ -425,72 +483,144 @@ useEffect(() => {
       return;
     }
 
-    if (listening) {
+    if (recognitionActiveRef.current || listening) {
       recognitionRef.current?.stop();
+      recognitionActiveRef.current = false;
       setListening(false);
       return;
     }
 
-    /*
-     * Stop any current AI speech before listening.
-     */
     window.speechSynthesis.cancel();
     setSpeaking(false);
-
-    transcriptRef.current = "";
-    submittedTranscriptRef.current = "";
-    setTranscript("");
-
-    try {
-      recognitionRef.current?.start();
-    } catch (error) {
-      console.error("Microphone start error:", error);
-
-      /*
-       * Chrome can throw if recognition.start()
-       * is called while recognition is already active.
-       */
-      setListening(false);
-    }
+    startListening();
   }
 
   /*
    * Browser text-to-speech.
+   * After the AI finishes speaking, listening starts automatically.
    */
-function speakText(text) {
-  if (!text || !("speechSynthesis" in window)) {
-    return;
+  function speakText(text) {
+    if (!text || !("speechSynthesis" in window)) {
+      return;
+    }
+
+    if (speechRestartTimerRef.current) {
+      clearTimeout(speechRestartTimerRef.current);
+      speechRestartTimerRef.current = null;
+    }
+
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+
+    utterance.lang = "en-US";
+    utterance.rate = 1;
+    utterance.pitch = 1;
+
+    utterance.onstart = () => {
+      setSpeaking(true);
+      if (recognitionActiveRef.current) {
+        recognitionRef.current?.stop();
+      }
+      setListening(false);
+    };
+
+    const restartListening = () => {
+      setSpeaking(false);
+
+      if (speechRestartTimerRef.current) {
+        clearTimeout(speechRestartTimerRef.current);
+      }
+
+      speechRestartTimerRef.current = setTimeout(() => {
+        speechRestartTimerRef.current = null;
+
+        if (conversationActiveRef.current && !sendingRef.current) {
+          startListening();
+        }
+      }, 350);
+    };
+
+    utterance.onend = restartListening;
+    utterance.onerror = restartListening;
+
+    window.speechSynthesis.speak(utterance);
   }
 
-  window.speechSynthesis.cancel();
-
-  const utterance = new SpeechSynthesisUtterance(text);
-
-  utterance.lang = "en-US";
-  utterance.rate = 1;
-  utterance.pitch = 1;
-
-  utterance.onstart = () => {
-    setSpeaking(true);
-  };
-
-  utterance.onend = () => {
+  function stopSpeaking() {
+    window.speechSynthesis.cancel();
     setSpeaking(false);
-  };
 
-  utterance.onerror = () => {
+    if (conversationActiveRef.current && !sendingRef.current) {
+      startListening();
+    }
+  }
+
+  async function endConversation() {
+    const activeSessionId = sessionIdRef.current;
+    const activeMode = conversationModeRef.current;
+
+    conversationActiveRef.current = false;
+
+    if (speechRestartTimerRef.current) {
+      clearTimeout(speechRestartTimerRef.current);
+      speechRestartTimerRef.current = null;
+    }
+
+    window.speechSynthesis.cancel();
     setSpeaking(false);
-  };
 
-  window.speechSynthesis.speak(utterance);
-}
+    try {
+      recognitionRef.current?.stop();
+    } catch (error) {
+      console.debug("Recognition stop on end:", error);
+    }
+
+    recognitionActiveRef.current = false;
+    setListening(false);
+
+    if (activeSessionId && activeMode) {
+      try {
+        await fetch(`${API_BASE_URL}/api/conversation/end`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            session_id: activeSessionId,
+            mode: activeMode,
+          }),
+        });
+      } catch (error) {
+        console.error("End conversation error:", error);
+      }
+    }
+
+    sessionStorage.removeItem("talkative_session_id");
+    sessionStorage.removeItem("talkative_mode");
+
+    setSessionId(null);
+    setConversationMode(null);
+    setMessages([]);
+    setTranscript("");
+    setLatestGuidance(null);
+    setSending(false);
+    setScreen("home");
+
+    sessionIdRef.current = null;
+    conversationModeRef.current = null;
+    sendingRef.current = false;
+    transcriptRef.current = "";
+    submittedTranscriptRef.current = "";
+  }
+
   /*
    * CONVERSATION SCREEN
    */
   if (screen === "conversation") {
     return (
       <div className="app-shell conversation-shell">
-        <div className="mouse-glow" />
+        <div ref={mouseGlowRef} className="mouse-glow" />
 
         <header className="topbar">
           <div className="brand">
@@ -573,24 +703,6 @@ function speakText(text) {
             </div>
 
             <div className="voice-area">
-            <button
-  onClick={() => {
-    alert("BUTTON CLICKED");
-    sendMessage("Tell me about yourself.");
-  }}
-  disabled={sending}
-  style={{
-    marginTop: "12px",
-    padding: "10px 18px",
-    borderRadius: "10px",
-    border: "1px solid rgba(255,255,255,0.2)",
-    background: "rgba(255,255,255,0.08)",
-    color: "white",
-    cursor: "pointer",
-  }}
->
-  TEST AI RESPONSE
-</button>
               {transcript && (
                 <div className="live-transcript">
                   <span>You're saying:</span>
@@ -696,7 +808,7 @@ function speakText(text) {
 
   return (
     <div className="app-shell">
-      <div className="mouse-glow" />
+      <div ref={mouseGlowRef} className="mouse-glow" />
 
       <header className="topbar">
         <div className="brand">
