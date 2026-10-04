@@ -457,132 +457,33 @@ useEffect(() => {
   /*
    * Browser text-to-speech.
    */
-  function speakText(text) {
-    if (!text || !("speechSynthesis" in window)) {
-      return;
-    }
-
-    window.speechSynthesis.cancel();
-
-    const utterance = new SpeechSynthesisUtterance(text);
-
-    utterance.lang = "en-US";
-    utterance.rate = 1;
-    utterance.pitch = 1;
-
-    utterance.onstart = () => {
-      setSpeaking(true);
-    };
-
-    utterance.onend = () => {
-      setSpeaking(false);
-    };
-
-    utterance.onerror = () => {
-      setSpeaking(false);
-    };
-
-    window.speechSynthesis.speak(utterance);
+function speakText(text) {
+  if (!text || !("speechSynthesis" in window)) {
+    return;
   }
 
-  /*
-   * Stop AI voice.
-   */
-  function stopSpeaking() {
-    window.speechSynthesis.cancel();
+  window.speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(text);
+
+  utterance.lang = "en-US";
+  utterance.rate = 1;
+  utterance.pitch = 1;
+
+  utterance.onstart = () => {
+    setSpeaking(true);
+  };
+
+  utterance.onend = () => {
     setSpeaking(false);
-  }
+  };
 
-  /*
-   * End the current conversation.
-   */
-  async function endConversation() {
-    if (!sessionIdRef.current || !conversationModeRef.current) {
-      setScreen("home");
-      return;
-    }
-
-    stopSpeaking();
-
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
-
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/conversation/end`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            session_id: sessionIdRef.current,
-            mode: conversationModeRef.current,
-          }),
-        }
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-
-        setLatestGuidance({
-          summary: data.summary,
-          strengths: data.strengths,
-          improvements: data.improvements,
-        });
-      }
-    } catch (error) {
-      console.error("End conversation error:", error);
-    }
-
-    sessionStorage.removeItem("talkative_session_id");
-    sessionStorage.removeItem("talkative_mode");
-
-    setSessionId(null);
-    setConversationMode(null);
-
-    sessionIdRef.current = null;
-    conversationModeRef.current = null;
-
-    transcriptRef.current = "";
-    submittedTranscriptRef.current = "";
-
-    sendingRef.current = false;
-    setSending(false);
-    setTranscript("");
-    setListening(false);
+  utterance.onerror = () => {
     setSpeaking(false);
+  };
 
-    setScreen("home");
-  }
-
-  /*
-   * Mouse-following background effect.
-   */
-  useEffect(() => {
-    const handleMouseMove = (event) => {
-      document.documentElement.style.setProperty(
-        "--mouse-x",
-        `${event.clientX}px`
-      );
-
-      document.documentElement.style.setProperty(
-        "--mouse-y",
-        `${event.clientY}px`
-      );
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-
-    return () => {
-      window.removeEventListener(
-        "mousemove",
-        handleMouseMove
-      );
-    };
-  }, []);
-
+  window.speechSynthesis.speak(utterance);
+}
   /*
    * CONVERSATION SCREEN
    */
