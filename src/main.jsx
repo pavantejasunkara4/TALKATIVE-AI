@@ -106,99 +106,123 @@ function App() {
   /*
    * Speech recognition setup.
    */
-  useEffect(() => {
-    const SpeechRecognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition;
+useEffect(() => {
+  const SpeechRecognition =
+    window.SpeechRecognition ||
+    window.webkitSpeechRecognition;
 
-    if (!SpeechRecognition) {
-      setSpeechSupported(false);
-      return;
+  if (!SpeechRecognition) {
+    setSpeechSupported(false);
+    return;
+  }
+
+  const recognition = new SpeechRecognition();
+
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  recognition.lang = "en-US";
+
+  recognition.onstart = () => {
+    setListening(true);
+  };
+
+  recognition.onresult = (event) => {
+    let finalText = "";
+    let interimText = "";
+
+    for (
+      let i = event.resultIndex;
+      i < event.results.length;
+      i++
+    ) {
+      const result = event.results[i];
+
+      if (result.isFinal) {
+        finalText += result[0].transcript;
+      } else {
+        interimText += result[0].transcript;
+      }
     }
 
-    const recognition = new SpeechRecognition();
-
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-    recognition.lang = "en-US";
-
-    recognition.onstart = () => {
-      setListening(true);
-    };
-
-    recognition.onresult = (event) => {
-      let finalText = "";
-      let interimText = "";
-
-      for (
-        let i = event.resultIndex;
-        i < event.results.length;
-        i++
-      ) {
-        const result = event.results[i];
-
-        if (result.isFinal) {
-          finalText += result[0].transcript;
-        } else {
-          interimText += result[0].transcript;
-        }
-      }
-
-      const visibleText = (finalText || interimText).trim();
-
-      if (visibleText) {
-        transcriptRef.current = visibleText;
-        setTranscript(visibleText);
-      }
-
-      // Send only the finalized speech result.
-      // Use a ref so this recognition handler never holds a stale
-      // sendMessage function from the first React render.
-      if (finalText.trim() && sendMessageRef.current) {
-        const message = finalText.trim();
-        submittedTranscriptRef.current = message;
-        sendMessageRef.current(message);
-      }
-    };
-
-    recognition.onerror = (event) => {
-      console.error("Speech recognition error:", event.error);
-      setListening(false);
-    };
+    const finalMessage = finalText.trim();
+    const interimMessage = interimText.trim();
 
     /*
-     * IMPORTANT:
-     * When Chrome finishes speech recognition,
-     * automatically send the final transcript.
+     * Show the newest speech immediately.
      */
-    recognition.onend = () => {
-      setListening(false);
+    const visibleText =
+      finalMessage || interimMessage;
 
-      // Chrome can sometimes end recognition with the transcript
-      // delivered as an interim result first. If that happens,
-      // submit the final visible transcript here.
-      const pendingMessage = transcriptRef.current.trim();
+    if (visibleText) {
+      transcriptRef.current = visibleText;
+      setTranscript(visibleText);
+    }
 
-      if (
-        pendingMessage &&
-        pendingMessage !== submittedTranscriptRef.current &&
-        sendMessageRef.current &&
-        !sendingRef.current
-      ) {
-        submittedTranscriptRef.current = pendingMessage;
-        sendMessageRef.current(pendingMessage);
+    /*
+     * Send the finalized sentence immediately.
+     * Prevent duplicate submissions.
+     */
+    if (
+      finalMessage &&
+      sendMessageRef.current &&
+      !sendingRef.current &&
+      finalMessage !== submittedTranscriptRef.current
+    ) {
+      submittedTranscriptRef.current = finalMessage;
+
+      sendMessageRef.current(finalMessage);
+
+      /*
+       * Stop recognition as soon as the final sentence
+       * has been captured.
+       */
+      try {
+        recognition.stop();
+      } catch (error) {
+        console.debug(
+          "Recognition stop after final result:",
+          error
+        );
       }
-    };
+    }
+  };
 
-    recognitionRef.current = recognition;
+  recognition.onerror = (event) => {
+    console.error(
+      "Speech recognition error:",
+      event.error
+    );
 
-    return () => {
+    setListening(false);
+  };
+
+  recognition.onend = () => {
+    setListening(false);
+
+    /*
+     * Do not submit the same transcript again here.
+     *
+     * The final result handler above is responsible
+     * for sending finalized speech.
+     */
+  };
+
+  recognitionRef.current = recognition;
+
+  return () => {
+    try {
       recognition.stop();
-      recognitionRef.current = null;
-    };
-  }, []);
+    } catch (error) {
+      console.debug(
+        "Recognition cleanup:",
+        error
+      );
+    }
 
+    recognitionRef.current = null;
+  };
+}, []);
   /*
    * Start a new AI conversation.
    */
