@@ -149,7 +149,7 @@ useEffect(() => {
     const interimMessage = interimText.trim();
 
     /*
-     * Show the newest speech immediately.
+     * Show speech immediately while the user is talking.
      */
     const visibleText =
       finalMessage || interimMessage;
@@ -161,7 +161,6 @@ useEffect(() => {
 
     /*
      * Send the finalized sentence immediately.
-     * Prevent duplicate submissions.
      */
     if (
       finalMessage &&
@@ -171,11 +170,8 @@ useEffect(() => {
     ) {
       submittedTranscriptRef.current = finalMessage;
 
-      sendMessageRef.current(finalMessage);
-
       /*
-       * Stop recognition as soon as the final sentence
-       * has been captured.
+       * Stop listening while the AI processes and speaks.
        */
       try {
         recognition.stop();
@@ -185,6 +181,8 @@ useEffect(() => {
           error
         );
       }
+
+      sendMessageRef.current(finalMessage);
     }
   };
 
@@ -199,13 +197,6 @@ useEffect(() => {
 
   recognition.onend = () => {
     setListening(false);
-
-    /*
-     * Do not submit the same transcript again here.
-     *
-     * The final result handler above is responsible
-     * for sending finalized speech.
-     */
   };
 
   recognitionRef.current = recognition;
