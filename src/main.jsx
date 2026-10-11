@@ -1,3 +1,4 @@
+
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { supabase } from "./supabaseClient";
@@ -50,6 +51,8 @@ const moods = [
 function App() {
   const [selected, setSelected] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
   const [historyItems, setHistoryItems] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
@@ -58,40 +61,24 @@ function App() {
   const [showAll, setShowAll] = useState(false);
 
   const [screen, setScreen] = useState("home");
-
   const [starting, setStarting] = useState(false);
   const [sending, setSending] = useState(false);
-
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
 
   const [sessionId, setSessionId] = useState(null);
   const [conversationMode, setConversationMode] = useState(null);
-
   const [messages, setMessages] = useState([]);
   const [transcript, setTranscript] = useState("");
-
   const [latestGuidance, setLatestGuidance] = useState(null);
-
   const [speechSupported, setSpeechSupported] = useState(true);
 
   const recognitionRef = useRef(null);
   const sendMessageRef = useRef(null);
   const sendingRef = useRef(false);
-
   const sessionIdRef = useRef(null);
   const conversationModeRef = useRef(null);
-
-  /*
-   * This ref stores the latest speech transcript.
-   * It prevents React state timing from causing the
-   * microphone result to be lost before onend().
-   */
   const transcriptRef = useRef("");
-
-  /*
-   * Prevents the same sentence from being submitted twice.
-   */
   const submittedTranscriptRef = useRef("");
   const conversationActiveRef = useRef(false);
   const recognitionActiveRef = useRef(false);
@@ -101,41 +88,53 @@ function App() {
   const savedSessionIdsRef = useRef(new Set());
 
   const selectedMood = moods.find((mood) => mood.id === selected);
-  if (!currentUser) {
-  return <Auth />;
-}
 
-  /*
-   * Load the authenticated Supabase user. The database RLS policies
-   * ensure each account can access only its own saved conversations.
-   */
+  // Authentication: run on every render in the same hook order.
   useEffect(() => {
     let mounted = true;
 
-    supabase.auth.getUser().then(({ data, error }) => {
-      if (error) console.error("Supabase user lookup:", error);
-      if (mounted) setCurrentUser(data?.user || null);
-    });
+    async function loadUser() {
+      try {
+        const { data, error } = await supabase.auth.getUser();
 
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        if (mounted) setCurrentUser(session?.user || null);
+        if (error) throw error;
+
+        if (mounted) {
+          setCurrentUser(data.user ?? null);
+        }
+      } catch (error) {
+        console.error("Supabase user lookup:", error);
+
+        if (mounted) {
+          setCurrentUser(null);
+        }
+      } finally {
+        if (mounted) setAuthLoading(false);
       }
-    );
+    }
+
+    loadUser();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (mounted) {
+        setCurrentUser(session?.user ?? null);
+        setAuthLoading(false);
+      }
+    });
 
     return () => {
       mounted = false;
-      authListener?.subscription?.unsubscribe();
+      subscription.unsubscribe();
     };
   }, []);
 
+  // Keep messages and conversation refs synchronized.
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
 
-  /*
-   * Keep refs synchronized with the current conversation.
-   */
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
@@ -148,9 +147,7 @@ function App() {
     sendingRef.current = sending;
   }, [sending]);
 
-  /*
-   * Mouse-follow glow.
-   */
+  // Mouse-follow glow.
   useEffect(() => {
     const handleMouseMove = (event) => {
       const glow = mouseGlowRef.current;
@@ -167,302 +164,142 @@ function App() {
     };
   }, []);
 
-  /*
-   * Speech recognition setup.
-   */
-useEffect(() => {
-  const SpeechRecognition =
-    window.SpeechRecognition ||
-    window.webkitSpeechRecognition;
+  // Browser speech recognition setup.
+  useEffect(() => {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
 
-  if (!SpeechRecognition) {
-    setSpeechSupported(false);
-    return;
-  }
+    if (!SpeechRecognition) {
+      setSpeechSupported(false);
+      return;
+    }
 
-  const recognition = new SpeechRecognition();
+    const recognition = new SpeechRecognition();
 
-  recognition.continuous = false;
-  recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
-  recognition.lang = "en-US";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    recognition.lang = "en-US";
 
-  recognition.onstart = () => {
-    recognitionActiveRef.current = true;
-    setListening(true);
-  };
+    recognition.onstart = () => {
+      recognitionActiveRef.current = true;
+      setListening(true);
+    };
 
-  recognition.onresult = (event) => {
-    let finalText = "";
-    let interimText = "";
+    recognition.onresult = (event) => {
+      let finalText = "";
+      let interimText = "";
 
-    for (
-      let i = event.resultIndex;
-      i < event.results.length;
-      i++
-    ) {
-      const result = event.results[i];
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
 
-      if (result.isFinal) {
-        finalText += result[0].transcript;
-      } else {
-        interimText += result[0].transcript;
+        if (result.isFinal) {
+          finalText += result[0].transcript;
+        } else {
+          interimText += result[0].transcript;
+        }
       }
-    }
 
-    const finalMessage = finalText.trim();
-    const interimMessage = interimText.trim();
+      const finalMessage = finalText.trim();
+      const interimMessage = interimText.trim();
+      const visibleText = finalMessage || interimMessage;
 
-    /*
-     * Show speech immediately while the user is talking.
-     */
-    const visibleText =
-      finalMessage || interimMessage;
+      if (visibleText) {
+        transcriptRef.current = visibleText;
+        setTranscript(visibleText);
+      }
 
-    if (visibleText) {
-      transcriptRef.current = visibleText;
-      setTranscript(visibleText);
-    }
+      if (
+        finalMessage &&
+        sendMessageRef.current &&
+        !sendingRef.current &&
+        finalMessage !== submittedTranscriptRef.current
+      ) {
+        submittedTranscriptRef.current = finalMessage;
 
-    /*
-     * Send the finalized sentence immediately.
-     */
-    if (
-      finalMessage &&
-      sendMessageRef.current &&
-      !sendingRef.current &&
-      finalMessage !== submittedTranscriptRef.current
-    ) {
-      submittedTranscriptRef.current = finalMessage;
+        try {
+          recognition.stop();
+        } catch (error) {
+          console.debug("Recognition stop:", error);
+        }
 
-      /*
-       * Stop listening while the AI processes and speaks.
-       */
+        sendMessageRef.current(finalMessage);
+      }
+    };
+
+    recognition.onerror = (event) => {
+      recognitionActiveRef.current = false;
+      setListening(false);
+      console.error("Speech recognition error:", event.error);
+    };
+
+    recognition.onend = () => {
+      recognitionActiveRef.current = false;
+      setListening(false);
+    };
+
+    recognitionRef.current = recognition;
+
+    return () => {
       try {
         recognition.stop();
       } catch (error) {
-        console.debug(
-          "Recognition stop after final result:",
-          error
-        );
+        console.debug("Recognition cleanup:", error);
       }
 
-      sendMessageRef.current(finalMessage);
-    }
-  };
+      recognitionRef.current = null;
+      recognitionActiveRef.current = false;
+    };
+  }, []);
 
-  recognition.onerror = (event) => {
-    recognitionActiveRef.current = false;
-    console.error(
-      "Speech recognition error:",
-      event.error
-    );
+  // Speak AI responses, then resume listening.
+  function speakText(text) {
+    if (!text || !("speechSynthesis" in window)) return;
 
-    setListening(false);
-  };
-
-  recognition.onend = () => {
-    recognitionActiveRef.current = false;
-    setListening(false);
-  };
-
-  recognitionRef.current = recognition;
-
-  return () => {
-    try {
-      recognition.stop();
-    } catch (error) {
-      console.debug(
-        "Recognition cleanup:",
-        error
-      );
+    if (speechRestartTimerRef.current) {
+      clearTimeout(speechRestartTimerRef.current);
+      speechRestartTimerRef.current = null;
     }
 
-    recognitionRef.current = null;
-    recognitionActiveRef.current = false;
-  };
-}, []);
-  /*
-   * Start a new AI conversation.
-   */
-  async function startConversation() {
-    if (!selected || starting) {
-      return;
-    }
+    window.speechSynthesis.cancel();
 
-    setStarting(true);
-    conversationActiveRef.current = false;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-US";
+    utterance.rate = 1;
+    utterance.pitch = 1;
 
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/conversation/start`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            mode: selected,
-          }),
+    utterance.onstart = () => {
+      setSpeaking(true);
+
+      if (recognitionActiveRef.current) {
+        recognitionRef.current?.stop();
+      }
+
+      setListening(false);
+    };
+
+    const restartListening = () => {
+      setSpeaking(false);
+
+      if (speechRestartTimerRef.current) {
+        clearTimeout(speechRestartTimerRef.current);
+      }
+
+      speechRestartTimerRef.current = setTimeout(() => {
+        speechRestartTimerRef.current = null;
+
+        if (conversationActiveRef.current && !sendingRef.current) {
+          startListening();
         }
-      );
+      }, 350);
+    };
 
-      if (!response.ok) {
-        throw new Error(
-          `Start conversation failed: ${response.status}`
-        );
-      }
+    utterance.onend = restartListening;
+    utterance.onerror = restartListening;
 
-      const data = await response.json();
-
-      setSessionId(data.session_id);
-      setConversationMode(data.mode);
-
-      sessionIdRef.current = data.session_id;
-      conversationModeRef.current = data.mode;
-
-      sessionStorage.setItem(
-        "talkative_session_id",
-        data.session_id
-      );
-
-      sessionStorage.setItem(
-        "talkative_mode",
-        data.mode
-      );
-
-      const greeting = data.greeting || "Hello! Let's start talking.";
-
-      const initialMessages = [{ role: "assistant", content: greeting }];
-      messagesRef.current = initialMessages;
-      setMessages(initialMessages);
-
-      setLatestGuidance(null);
-      sendingRef.current = false;
-      setSending(false);
-      setTranscript("");
-      transcriptRef.current = "";
-      submittedTranscriptRef.current = "";
-
-      setScreen("conversation");
-      conversationActiveRef.current = true;
-
-      speakText(greeting);
-    } catch (error) {
-      console.error("Start conversation error:", error);
-
-      alert(
-        "Unable to start the conversation. Please check that the backend is running."
-      );
-    } finally {
-      setStarting(false);
-    }
+    window.speechSynthesis.speak(utterance);
   }
 
-  /*
-   * Send user's message to FastAPI.
-   */
-  async function sendMessage(message) {
-    const cleanMessage = String(message || "").trim();
-    const activeSessionId = sessionIdRef.current;
-    const activeMode = conversationModeRef.current;
-
-    if (
-      !cleanMessage ||
-      sendingRef.current ||
-      !activeSessionId ||
-      !activeMode
-    ) {
-      return;
-    }
-
-    sendingRef.current = true;
-    setSending(true);
-
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/conversation/message`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            session_id: activeSessionId,
-            mode: activeMode,
-            message: cleanMessage,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-
-        throw new Error(
-          `Message request failed: ${response.status} ${errorText}`
-        );
-      }
-
-      const data = await response.json();
-
-      /*
-       * Add user's message.
-       */
-      const nextMessages = [
-        ...messagesRef.current,
-        { role: "user", content: cleanMessage },
-        ...(data.reply ? [{ role: "assistant", content: data.reply }] : []),
-      ];
-      messagesRef.current = nextMessages;
-      setMessages(nextMessages);
-
-      /*
-       * Store correction / suggestion / tip.
-       */
-      setLatestGuidance({
-        correction: data.correction || null,
-        suggestion: data.suggestion || null,
-        tip: data.tip || null,
-        stage: data.stage || "conversation",
-      });
-
-      /*
-       * Clear current transcript.
-       */
-      setTranscript("");
-      transcriptRef.current = "";
-
-      /*
-       * Speak the AI response.
-       */
-      if (data.reply) {
-        speakText(data.reply);
-      }
-    } catch (error) {
-      console.error("Send message error:", error);
-
-      const errorMessages = [
-        ...messagesRef.current,
-        {
-          role: "assistant",
-          content: "I couldn't connect to the AI right now. Please try again.",
-        },
-      ];
-      messagesRef.current = errorMessages;
-      setMessages(errorMessages);
-    } finally {
-      sendingRef.current = false;
-      setSending(false);
-    }
-  }
-
-  // Always expose the newest sendMessage implementation to the
-  // long-lived speech-recognition event handlers.
-  sendMessageRef.current = sendMessage;
-
-  /*
-   * Start microphone listening.
-   */
   function startListening() {
     if (
       !speechSupported ||
@@ -470,12 +307,9 @@ useEffect(() => {
       !sessionIdRef.current ||
       !conversationModeRef.current ||
       sendingRef.current ||
-      !recognitionRef.current
+      !recognitionRef.current ||
+      recognitionActiveRef.current
     ) {
-      return;
-    }
-
-    if (recognitionActiveRef.current) {
       return;
     }
 
@@ -505,9 +339,7 @@ useEffect(() => {
       return;
     }
 
-    if (sendingRef.current) {
-      return;
-    }
+    if (sendingRef.current) return;
 
     if (recognitionActiveRef.current || listening) {
       recognitionRef.current?.stop();
@@ -521,58 +353,6 @@ useEffect(() => {
     startListening();
   }
 
-  /*
-   * Browser text-to-speech.
-   * After the AI finishes speaking, listening starts automatically.
-   */
-  function speakText(text) {
-    if (!text || !("speechSynthesis" in window)) {
-      return;
-    }
-
-    if (speechRestartTimerRef.current) {
-      clearTimeout(speechRestartTimerRef.current);
-      speechRestartTimerRef.current = null;
-    }
-
-    window.speechSynthesis.cancel();
-
-    const utterance = new SpeechSynthesisUtterance(text);
-
-    utterance.lang = "en-US";
-    utterance.rate = 1;
-    utterance.pitch = 1;
-
-    utterance.onstart = () => {
-      setSpeaking(true);
-      if (recognitionActiveRef.current) {
-        recognitionRef.current?.stop();
-      }
-      setListening(false);
-    };
-
-    const restartListening = () => {
-      setSpeaking(false);
-
-      if (speechRestartTimerRef.current) {
-        clearTimeout(speechRestartTimerRef.current);
-      }
-
-      speechRestartTimerRef.current = setTimeout(() => {
-        speechRestartTimerRef.current = null;
-
-        if (conversationActiveRef.current && !sendingRef.current) {
-          startListening();
-        }
-      }, 350);
-    };
-
-    utterance.onend = restartListening;
-    utterance.onerror = restartListening;
-
-    window.speechSynthesis.speak(utterance);
-  }
-
   function stopSpeaking() {
     window.speechSynthesis.cancel();
     setSpeaking(false);
@@ -582,6 +362,151 @@ useEffect(() => {
     }
   }
 
+  // Start a new backend conversation.
+  async function startConversation() {
+    if (!selected || starting) return;
+
+    setStarting(true);
+    conversationActiveRef.current = false;
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/conversation/start`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: selected }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Start conversation failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      setSessionId(data.session_id);
+      setConversationMode(data.mode);
+      sessionIdRef.current = data.session_id;
+      conversationModeRef.current = data.mode;
+
+      sessionStorage.setItem("talkative_session_id", data.session_id);
+      sessionStorage.setItem("talkative_mode", data.mode);
+
+      const greeting = data.greeting || "Hello! Let's start talking.";
+      const initialMessages = [
+        { role: "assistant", content: greeting },
+      ];
+
+      messagesRef.current = initialMessages;
+      setMessages(initialMessages);
+      setLatestGuidance(null);
+      sendingRef.current = false;
+      setSending(false);
+      transcriptRef.current = "";
+      submittedTranscriptRef.current = "";
+      setTranscript("");
+      setScreen("conversation");
+      conversationActiveRef.current = true;
+
+      speakText(greeting);
+    } catch (error) {
+      console.error("Start conversation error:", error);
+      alert(
+        "Unable to start the conversation. Please check your backend connection and try again."
+      );
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  // Send a message to FastAPI.
+  async function sendMessage(message) {
+    const cleanMessage = String(message || "").trim();
+    const activeSessionId = sessionIdRef.current;
+    const activeMode = conversationModeRef.current;
+
+    if (
+      !cleanMessage ||
+      sendingRef.current ||
+      !activeSessionId ||
+      !activeMode
+    ) {
+      return;
+    }
+
+    sendingRef.current = true;
+    setSending(true);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/conversation/message`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: activeSessionId,
+            mode: activeMode,
+            message: cleanMessage,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+
+        throw new Error(
+          `Message request failed: ${response.status} ${errorText}`
+        );
+      }
+
+      const data = await response.json();
+
+      const nextMessages = [
+        ...messagesRef.current,
+        { role: "user", content: cleanMessage },
+        ...(data.reply
+          ? [{ role: "assistant", content: data.reply }]
+          : []),
+      ];
+
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
+
+      setLatestGuidance({
+        correction: data.correction || null,
+        suggestion: data.suggestion || null,
+        tip: data.tip || null,
+        stage: data.stage || "conversation",
+      });
+
+      transcriptRef.current = "";
+      setTranscript("");
+
+      if (data.reply) speakText(data.reply);
+    } catch (error) {
+      console.error("Send message error:", error);
+
+      const errorMessages = [
+        ...messagesRef.current,
+        {
+          role: "assistant",
+          content: "I couldn't connect to the AI right now. Please try again.",
+        },
+      ];
+
+      messagesRef.current = errorMessages;
+      setMessages(errorMessages);
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+  }
+
+  // Give long-lived speech handlers the latest send function.
+  sendMessageRef.current = sendMessage;
+
+  // End the session and save its transcript.
   async function endConversation() {
     const activeSessionId = sessionIdRef.current;
     const activeMode = conversationModeRef.current;
@@ -606,17 +531,23 @@ useEffect(() => {
     setListening(false);
 
     if (activeSessionId && activeMode) {
-      // Save the transcript before clearing the live conversation.
       if (!savedSessionIdsRef.current.has(activeSessionId)) {
         try {
           const transcriptMessages = messagesRef.current || [];
+
           if (transcriptMessages.length > 0 && currentUser) {
             const firstUserMessage = transcriptMessages.find(
               (item) => item.role === "user" && item.content
             );
-            const modeTitle = moods.find((item) => item.id === activeMode)?.title || activeMode;
+
+            const modeTitle =
+              moods.find((item) => item.id === activeMode)?.title ||
+              activeMode;
+
             const title = firstUserMessage
-              ? `${modeTitle}: ${String(firstUserMessage.content).trim().slice(0, 70)}`
+              ? `${modeTitle}: ${String(firstUserMessage.content)
+                  .trim()
+                  .slice(0, 70)}`
               : `${modeTitle} conversation`;
 
             const { error: saveError } = await supabase
@@ -631,22 +562,25 @@ useEffect(() => {
               });
 
             if (saveError) throw saveError;
+
             savedSessionIdsRef.current.add(activeSessionId);
           } else if (!currentUser) {
-            alert("You need to be signed in to save conversation history. This conversation will end without being saved.");
+            alert(
+              "You need to sign in to save conversation history. This conversation will end without being saved."
+            );
           }
-        } catch (saveError) {
-          console.error("Save conversation history error:", saveError);
-          alert("Your conversation ended, but its history could not be saved. Please check your connection and Supabase setup.");
+        } catch (error) {
+          console.error("Save conversation history error:", error);
+          alert(
+            "Your conversation ended, but its history could not be saved. Please check your connection and Supabase setup."
+          );
         }
       }
 
       try {
         await fetch(`${API_BASE_URL}/api/conversation/end`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             session_id: activeSessionId,
             mode: activeMode,
@@ -665,17 +599,18 @@ useEffect(() => {
     setMessages([]);
     messagesRef.current = [];
     setTranscript("");
+    transcriptRef.current = "";
+    submittedTranscriptRef.current = "";
     setLatestGuidance(null);
     setSending(false);
+    sendingRef.current = false;
     setScreen("home");
 
     sessionIdRef.current = null;
     conversationModeRef.current = null;
-    sendingRef.current = false;
-    transcriptRef.current = "";
-    submittedTranscriptRef.current = "";
   }
 
+  // Load only the signed-in user's history.
   async function loadHistory() {
     if (!currentUser) {
       setHistoryError("Please sign in to view your saved conversations.");
@@ -687,39 +622,58 @@ useEffect(() => {
     setHistoryError("");
     setSelectedHistory(null);
 
-    const { data, error } = await supabase
-      .from("conversation_history")
-      .select("id, session_id, mode, title, messages, created_at, ended_at")
-      .order("created_at", { ascending: false });
+    try {
+      const { data, error } = await supabase
+        .from("conversation_history")
+        .select(
+          "id, session_id, mode, title, messages, created_at, ended_at"
+        )
+        .order("created_at", { ascending: false });
 
-    if (error) {
-      console.error("Load conversation history error:", error);
-      setHistoryError("Couldn't load your history. Check the Supabase table and Row Level Security policies, then try again.");
-      setHistoryItems([]);
-    } else {
+      if (error) throw error;
+
       setHistoryItems(data || []);
+    } catch (error) {
+      console.error("Load conversation history error:", error);
+      setHistoryError(
+        "Couldn't load your history. Check the Supabase table and Row Level Security policies, then try again."
+      );
+      setHistoryItems([]);
+    } finally {
+      setHistoryLoading(false);
     }
-    setHistoryLoading(false);
   }
 
   async function deleteHistoryItem(item) {
-    const confirmed = window.confirm(`Delete “${item.title || "this conversation"}” from your history? This cannot be undone.`);
+    const confirmed = window.confirm(
+      `Delete "${item.title || "this conversation"}" from your history? This cannot be undone.`
+    );
+
     if (!confirmed) return;
 
     setHistoryBusyId(item.id);
-    const { error } = await supabase
-      .from("conversation_history")
-      .delete()
-      .eq("id", item.id);
 
-    if (error) {
+    try {
+      const { error } = await supabase
+        .from("conversation_history")
+        .delete()
+        .eq("id", item.id);
+
+      if (error) throw error;
+
+      setHistoryItems((items) =>
+        items.filter((entry) => entry.id !== item.id)
+      );
+
+      if (selectedHistory?.id === item.id) {
+        setSelectedHistory(null);
+      }
+    } catch (error) {
       console.error("Delete conversation history error:", error);
       alert("Couldn't delete this conversation. Please try again.");
-    } else {
-      setHistoryItems((items) => items.filter((entry) => entry.id !== item.id));
-      if (selectedHistory?.id === item.id) setSelectedHistory(null);
+    } finally {
+      setHistoryBusyId(null);
     }
-    setHistoryBusyId(null);
   }
 
   function openHistory() {
@@ -732,21 +686,68 @@ useEffect(() => {
     setScreen("home");
   }
 
-  /*
-   * SAVED CONVERSATION HISTORY SCREEN
-   */
+  // Clean up speech playback and timers when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (speechRestartTimerRef.current) {
+        clearTimeout(speechRestartTimerRef.current);
+      }
+
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  // These render guards are after every hook.
+  if (authLoading) {
+    return <div className="auth-loading">Loading Talkative AI...</div>;
+  }
+
+  if (!currentUser) {
+    return (
+      <Auth
+        onAuthenticated={(session) => {
+          setCurrentUser(session?.user ?? null);
+        }}
+      />
+    );
+  }
+
+  // Saved conversation history screen.
   if (screen === "history") {
     return (
       <div className="app-shell">
         <div ref={mouseGlowRef} className="mouse-glow" />
+
         <header className="topbar">
           <div className="brand">
             <span className="brand-mark">T</span>
             <span>Talkative AI</span>
           </div>
+
           <div className="history-actions">
-            <button className="history-button" onClick={returnHome}>← Back to home</button>
-            <button className="history-button" onClick={loadHistory} disabled={historyLoading}>↻ Refresh</button>
+            <button className="history-button" onClick={returnHome}>
+              ← Back to home
+            </button>
+            <button
+              className="history-button"
+              onClick={loadHistory}
+              disabled={historyLoading}
+            >
+              ↻ Refresh
+            </button>
+            <button
+              className="history-button"
+              onClick={async () => {
+                await supabase.auth.signOut();
+                setCurrentUser(null);
+                setHistoryItems([]);
+                setScreen("home");
+              }}
+            >
+              Log out
+            </button>
           </div>
         </header>
 
@@ -754,60 +755,137 @@ useEffect(() => {
           <div className="history-heading">
             <div>
               <p className="eyebrow">YOUR PROGRESS</p>
-              <h1>Conversation <span className="gradient-text">history.</span></h1>
-              <p>Review previous practice sessions and the conversations you completed.</p>
+              <h1>
+                Conversation <span className="gradient-text">history.</span>
+              </h1>
+              <p>
+                Review previous practice sessions and the conversations you
+                completed.
+              </p>
             </div>
           </div>
 
-          {historyLoading && <div className="history-empty">Loading your saved conversations…</div>}
-          {!historyLoading && historyError && <div className="history-error">{historyError}</div>}
-          {!historyLoading && !historyError && historyItems.length === 0 && (
+          {historyLoading && (
             <div className="history-empty">
-              <h3>No saved conversations yet</h3>
-              <p>Complete a practice conversation and press End to save its transcript here.</p>
+              Loading your saved conversations…
             </div>
           )}
 
-          {!historyLoading && !historyError && historyItems.length > 0 && (
-            <div className="history-list">
-              {historyItems.map((item) => {
-                const modeTitle = moods.find((mood) => mood.id === item.mode)?.title || item.mode;
-                const itemMessages = Array.isArray(item.messages) ? item.messages : [];
-                const preview = itemMessages.find((message) => message.role === "user")?.content || "No user messages in this session.";
-                return (
-                  <article className="history-card" key={item.id}>
-                    <h3>{item.title || `${modeTitle} conversation`}</h3>
-                    <div className="history-meta">
-                      <div>Mode: {modeTitle}</div>
-                      <div>{item.created_at ? new Date(item.created_at).toLocaleString() : "Date unavailable"}</div>
-                      <div>{itemMessages.length} messages</div>
-                    </div>
-                    <p className="history-preview">{String(preview).slice(0, 180)}{String(preview).length > 180 ? "…" : ""}</p>
-                    <div className="history-card-actions">
-                      <button className="history-button" onClick={() => setSelectedHistory(item)}>View transcript</button>
-                      <button className="history-button" onClick={() => deleteHistoryItem(item)} disabled={historyBusyId === item.id}>{historyBusyId === item.id ? "Deleting…" : "Delete"}</button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
+          {!historyLoading && historyError && (
+            <div className="history-error">{historyError}</div>
           )}
+
+          {!historyLoading &&
+            !historyError &&
+            historyItems.length === 0 && (
+              <div className="history-empty">
+                <h3>No saved conversations yet</h3>
+                <p>
+                  Complete a practice conversation and press End to save its
+                  transcript here.
+                </p>
+              </div>
+            )}
+
+          {!historyLoading &&
+            !historyError &&
+            historyItems.length > 0 && (
+              <div className="history-list">
+                {historyItems.map((item) => {
+                  const modeTitle =
+                    moods.find((mood) => mood.id === item.mode)?.title ||
+                    item.mode;
+
+                  const itemMessages = Array.isArray(item.messages)
+                    ? item.messages
+                    : [];
+
+                  const preview =
+                    itemMessages.find((message) => message.role === "user")
+                      ?.content || "No user messages in this session.";
+
+                  return (
+                    <article className="history-card" key={item.id}>
+                      <h3>{item.title || `${modeTitle} conversation`}</h3>
+
+                      <div className="history-meta">
+                        <div>Mode: {modeTitle}</div>
+                        <div>
+                          {item.created_at
+                            ? new Date(item.created_at).toLocaleString()
+                            : "Date unavailable"}
+                        </div>
+                        <div>{itemMessages.length} messages</div>
+                      </div>
+
+                      <p className="history-preview">
+                        {String(preview).slice(0, 180)}
+                        {String(preview).length > 180 ? "…" : ""}
+                      </p>
+
+                      <div className="history-card-actions">
+                        <button
+                          className="history-button"
+                          onClick={() => setSelectedHistory(item)}
+                        >
+                          View transcript
+                        </button>
+
+                        <button
+                          className="history-button"
+                          onClick={() => deleteHistoryItem(item)}
+                          disabled={historyBusyId === item.id}
+                        >
+                          {historyBusyId === item.id ? "Deleting…" : "Delete"}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
 
           {selectedHistory && (
             <section className="history-detail">
               <div className="history-heading">
                 <div>
                   <p className="eyebrow">SAVED TRANSCRIPT</p>
-                  <h2>{selectedHistory.title || "Conversation transcript"}</h2>
-                  <p className="history-meta">Read-only transcript · {selectedHistory.created_at ? new Date(selectedHistory.created_at).toLocaleString() : "Date unavailable"}</p>
+                  <h2>
+                    {selectedHistory.title || "Conversation transcript"}
+                  </h2>
+                  <p className="history-meta">
+                    Read-only transcript ·{" "}
+                    {selectedHistory.created_at
+                      ? new Date(selectedHistory.created_at).toLocaleString()
+                      : "Date unavailable"}
+                  </p>
                 </div>
-                <button className="history-button" onClick={() => setSelectedHistory(null)}>Close transcript</button>
+
+                <button
+                  className="history-button"
+                  onClick={() => setSelectedHistory(null)}
+                >
+                  Close transcript
+                </button>
               </div>
+
               <div className="chat-window">
-                {(Array.isArray(selectedHistory.messages) ? selectedHistory.messages : []).map((message, index) => (
-                  <div className={`message-row ${message.role === "user" ? "user" : "assistant"}`} key={`${selectedHistory.id}-${index}`}>
-                    <div className="message-avatar">{message.role === "assistant" ? "✦" : "You"}</div>
-                    <div className="message-bubble">{message.content || ""}</div>
+                {(Array.isArray(selectedHistory.messages)
+                  ? selectedHistory.messages
+                  : []
+                ).map((message, index) => (
+                  <div
+                    className={`message-row ${
+                      message.role === "user" ? "user" : "assistant"
+                    }`}
+                    key={`${selectedHistory.id}-${index}`}
+                  >
+                    <div className="message-avatar">
+                      {message.role === "assistant" ? "✦" : "You"}
+                    </div>
+                    <div className="message-bubble">
+                      {message.content || ""}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -818,9 +896,7 @@ useEffect(() => {
     );
   }
 
-  /*
-   * CONVERSATION SCREEN
-   */
+  // Live conversation screen.
   if (screen === "conversation") {
     return (
       <div className="app-shell conversation-shell">
@@ -836,10 +912,7 @@ useEffect(() => {
             {selectedMood?.icon} {selectedMood?.title}
           </div>
 
-          <button
-            className="end-button"
-            onClick={endConversation}
-          >
+          <button className="end-button" onClick={endConversation}>
             End
           </button>
         </header>
@@ -849,25 +922,17 @@ useEffect(() => {
             <div className="conversation-header">
               <div>
                 <p className="eyebrow">LIVE CONVERSATION</p>
-
                 <h1>
-                  Let's{" "}
-                  <span className="gradient-text">
-                    talk.
-                  </span>
+                  Let's <span className="gradient-text">talk.</span>
                 </h1>
-
                 <p className="conversation-subtitle">
-                  Speak naturally. I'll listen, respond,
-                  correct you and help you improve.
+                  Speak naturally. I'll listen, respond, correct you and help
+                  you improve.
                 </p>
               </div>
 
               {speaking && (
-                <button
-                  className="stop-speaking"
-                  onClick={stopSpeaking}
-                >
+                <button className="stop-speaking" onClick={stopSpeaking}>
                   🔊 Stop AI voice
                 </button>
               )}
@@ -880,23 +945,15 @@ useEffect(() => {
                   className={`message-row ${message.role}`}
                 >
                   <div className="message-avatar">
-                    {message.role === "assistant"
-                      ? "✦"
-                      : "You"}
+                    {message.role === "assistant" ? "✦" : "You"}
                   </div>
-
-                  <div className="message-bubble">
-                    {message.content}
-                  </div>
+                  <div className="message-bubble">{message.content}</div>
                 </div>
               ))}
 
               {sending && (
                 <div className="message-row assistant">
-                  <div className="message-avatar">
-                    ✦
-                  </div>
-
+                  <div className="message-avatar">✦</div>
                   <div className="message-bubble typing">
                     <span />
                     <span />
@@ -920,15 +977,9 @@ useEffect(() => {
                 }`}
                 onClick={toggleListening}
                 disabled={sending}
-                aria-label={
-                  listening
-                    ? "Stop listening"
-                    : "Start listening"
-                }
+                aria-label={listening ? "Stop listening" : "Start listening"}
               >
-                <span className="mic-icon">
-                  {listening ? "■" : "🎙️"}
-                </span>
+                <span className="mic-icon">{listening ? "■" : "🎙️"}</span>
               </button>
 
               <p className="voice-status">
@@ -946,7 +997,6 @@ useEffect(() => {
           <aside className="guidance-panel">
             <div className="panel-heading">
               <span className="panel-icon">✦</span>
-
               <div>
                 <p className="eyebrow">AI COACH</p>
                 <h2>Live guidance</h2>
@@ -956,44 +1006,29 @@ useEffect(() => {
             {!latestGuidance && (
               <div className="empty-guidance">
                 <div className="empty-icon">◎</div>
-
                 <p>
-                  Your communication feedback will
-                  appear here while you talk.
+                  Your communication feedback will appear here while you talk.
                 </p>
               </div>
             )}
 
             {latestGuidance?.correction && (
               <div className="guidance-card correction">
-                <span className="guidance-label">
-                  CORRECTION
-                </span>
-
-                <p>
-                  {latestGuidance.correction}
-                </p>
+                <span className="guidance-label">CORRECTION</span>
+                <p>{latestGuidance.correction}</p>
               </div>
             )}
 
             {latestGuidance?.suggestion && (
               <div className="guidance-card suggestion">
-                <span className="guidance-label">
-                  SUGGESTION
-                </span>
-
-                <p>
-                  {latestGuidance.suggestion}
-                </p>
+                <span className="guidance-label">SUGGESTION</span>
+                <p>{latestGuidance.suggestion}</p>
               </div>
             )}
 
             {latestGuidance?.tip && (
               <div className="guidance-card tip">
-                <span className="guidance-label">
-                  QUICK TIP
-                </span>
-
+                <span className="guidance-label">QUICK TIP</span>
                 <p>{latestGuidance.tip}</p>
               </div>
             )}
@@ -1003,12 +1038,8 @@ useEffect(() => {
     );
   }
 
-  /*
-   * HOME / MOOD SELECTION SCREEN
-   */
-  const visibleMoods = showAll
-    ? moods
-    : moods.slice(0, 3);
+  // Home and mood selection screen.
+  const visibleMoods = showAll ? moods : moods.slice(0, 3);
 
   return (
     <div className="app-shell">
@@ -1025,27 +1056,34 @@ useEffect(() => {
             <span className="status-dot" />
             AI conversation coach
           </div>
-          <button className="history-button" onClick={openHistory}>History</button>
+
+          <button className="history-button" onClick={openHistory}>
+            History
+          </button>
+
+          <button
+            className="history-button"
+            onClick={async () => {
+              await supabase.auth.signOut();
+              setCurrentUser(null);
+              setHistoryItems([]);
+              setScreen("home");
+            }}
+          >
+            Log out
+          </button>
         </div>
       </header>
 
       <main className="home-page">
         <section className="hero">
-          <p className="eyebrow">
-            YOUR AI CONVERSATION COACH
-          </p>
-
+          <p className="eyebrow">YOUR AI CONVERSATION COACH</p>
           <h1>
-            Speak with{" "}
-            <span className="gradient-text">
-              confidence.
-            </span>
+            Speak with <span className="gradient-text">confidence.</span>
           </h1>
-
           <p className="hero-description">
-            Practice real conversations with an AI that
-            listens, responds and helps you communicate
-            better in real time.
+            Practice real conversations with an AI that listens, responds and
+            helps you communicate better in real time.
           </p>
         </section>
 
@@ -1053,10 +1091,7 @@ useEffect(() => {
           <div className="section-heading">
             <div>
               <p className="eyebrow">CHOOSE YOUR SPACE</p>
-
-              <h2>
-                What would you like to practice?
-              </h2>
+              <h2>What would you like to practice?</h2>
             </div>
           </div>
 
@@ -1069,31 +1104,18 @@ useEffect(() => {
                 }`}
                 onClick={() => setSelected(mood.id)}
               >
-                <span className="mood-icon">
-                  {mood.icon}
-                </span>
-
-                <span className="mood-title">
-                  {mood.title}
-                </span>
-
-                <span className="mood-description">
-                  {mood.description}
-                </span>
+                <span className="mood-icon">{mood.icon}</span>
+                <span className="mood-title">{mood.title}</span>
+                <span className="mood-description">{mood.description}</span>
 
                 {selected === mood.id && (
-                  <span className="selected-indicator">
-                    ✓
-                  </span>
+                  <span className="selected-indicator">✓</span>
                 )}
               </button>
             ))}
           </div>
 
-          <button
-            className="show-more"
-            onClick={() => setShowAll(!showAll)}
-          >
+          <button className="show-more" onClick={() => setShowAll(!showAll)}>
             {showAll ? "Show less" : "Explore all modes"}
             <span>{showAll ? "↑" : "→"}</span>
           </button>
@@ -1114,8 +1136,7 @@ useEffect(() => {
           </button>
 
           <p className="start-hint">
-            🎙️ Voice-first conversation · AI-powered
-            feedback
+            🎙️ Voice-first conversation · AI-powered feedback
           </p>
         </section>
       </main>
