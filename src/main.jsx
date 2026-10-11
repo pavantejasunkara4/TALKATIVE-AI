@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import Auth from "./Auth";
+import { supabase } from "./supabaseClient";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -45,7 +47,7 @@ const moods = [
   },
 ];
 
-function App() {
+function TalkativeApp({ onLogout }) {
   const [selected, setSelected] = useState(null);
   const [showAll, setShowAll] = useState(false);
 
@@ -632,12 +634,20 @@ useEffect(() => {
             {selectedMood?.icon} {selectedMood?.title}
           </div>
 
-          <button
-            className="end-button"
-            onClick={endConversation}
-          >
-            End
-          </button>
+          <div className="topbar-actions">
+            <button
+              className="end-button"
+              onClick={endConversation}
+            >
+              End
+            </button>
+            <button
+              className="end-button logout-button"
+              onClick={onLogout}
+            >
+              Log out
+            </button>
+          </div>
         </header>
 
         <main className="conversation-page">
@@ -820,6 +830,12 @@ useEffect(() => {
           <span className="status-dot" />
           AI conversation coach
         </div>
+        <button
+          className="end-button logout-button"
+          onClick={onLogout}
+        >
+          Log out
+        </button>
       </header>
 
       <main className="home-page">
@@ -914,6 +930,67 @@ useEffect(() => {
       </main>
     </div>
   );
+}
+
+function App() {
+  const [authLoading, setAuthLoading] = useState(true);
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadSession() {
+      const { data, error } = await supabase.auth.getSession();
+
+      if (!mounted) return;
+
+      if (error) {
+        console.error("Session loading error:", error);
+      }
+
+      setUser(data?.session?.user ?? null);
+      setAuthLoading(false);
+    }
+
+    loadSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (mounted) {
+        setUser(session?.user ?? null);
+        setAuthLoading(false);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  async function handleLogout() {
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      console.error("Logout error:", error);
+      alert("Unable to log out. Please try again.");
+    }
+  }
+
+  if (authLoading) {
+    return <div className="auth-loading">Loading Talkative AI...</div>;
+  }
+
+  if (!user) {
+    return (
+      <Auth
+        onAuthenticated={(session) => setUser(session?.user ?? null)}
+      />
+    );
+  }
+
+  return <TalkativeApp onLogout={handleLogout} />;
 }
 
 createRoot(document.getElementById("root")).render(
