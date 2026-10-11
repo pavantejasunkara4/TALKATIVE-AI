@@ -827,3 +827,24 @@ h2 {
     margin-bottom: 28px;
   }
 }
+
+.auth-show-password {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 8px;
+  color: #a6abc2;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.auth-show-password input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 0;
+  accent-color: #8870ff;
+  cursor: pointer;
+  box-shadow: none;
+}
+
