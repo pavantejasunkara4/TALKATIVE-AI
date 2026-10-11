@@ -848,3 +848,133 @@ h2 {
   box-shadow: none;
 }
 
+/* ============ CONVERSATION HISTORY ============ */
+
+.history-section {
+  position: relative;
+  z-index: 1;
+  padding: 28px 0 70px;
+}
+
+.history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.history-heading p {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.history-button {
+  padding: 10px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: rgba(94, 242, 255, .07);
+  color: var(--cyan);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background .2s, transform .2s;
+}
+
+.history-button:hover {
+  background: rgba(94, 242, 255, .15);
+  transform: translateY(-1px);
+}
+
+.history-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.history-card {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+}
+
+.history-card h3 {
+  margin: 0 0 8px;
+  font-family: var(--display);
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.history-meta {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.history-preview {
+  margin: 14px 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.history-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.history-empty,
+.history-error {
+  padding: 28px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  color: var(--muted);
+  line-height: 1.7;
+  text-align: center;
+}
+
+.history-error {
+  border-color: rgba(255, 100, 120, .35);
+  color: #ff9aa9;
+}
+
+.history-detail {
+  margin-top: 24px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+}
+
+.history-detail .chat-window {
+  min-height: 220px;
+  max-height: 60vh;
+  margin-top: 18px;
+}
+
+@media (max-width: 700px) {
+  .history-list {
+    grid-template-columns: 1fr;
+  }
+
+  .history-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+
