@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { supabase } from "./supabaseClient";
+import Auth from "./Auth";
 import "./styles.css";
 
 const API_BASE_URL =
@@ -100,6 +101,9 @@ function App() {
   const savedSessionIdsRef = useRef(new Set());
 
   const selectedMood = moods.find((mood) => mood.id === selected);
+  if (!currentUser) {
+  return <Auth />;
+}
 
   /*
    * Load the authenticated Supabase user. The database RLS policies
