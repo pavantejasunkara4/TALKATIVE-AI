@@ -1,8 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";     
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import "./styles.css";
-import Auth from "./Auth";
 import { supabase } from "./supabaseClient";
+import "./styles.css";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -47,8 +46,14 @@ const moods = [
   },
 ];
 
-function TalkativeApp({ onLogout }) {
+function App() {
   const [selected, setSelected] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [historyItems, setHistoryItems] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [selectedHistory, setSelectedHistory] = useState(null);
+  const [historyBusyId, setHistoryBusyId] = useState(null);
   const [showAll, setShowAll] = useState(false);
 
   const [screen, setScreen] = useState("home");
@@ -91,8 +96,38 @@ function TalkativeApp({ onLogout }) {
   const recognitionActiveRef = useRef(false);
   const speechRestartTimerRef = useRef(null);
   const mouseGlowRef = useRef(null);
+  const messagesRef = useRef([]);
+  const savedSessionIdsRef = useRef(new Set());
 
   const selectedMood = moods.find((mood) => mood.id === selected);
+
+  /*
+   * Load the authenticated Supabase user. The database RLS policies
+   * ensure each account can access only its own saved conversations.
+   */
+  useEffect(() => {
+    let mounted = true;
+
+    supabase.auth.getUser().then(({ data, error }) => {
+      if (error) console.error("Supabase user lookup:", error);
+      if (mounted) setCurrentUser(data?.user || null);
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (mounted) setCurrentUser(session?.user || null);
+      }
+    );
+
+    return () => {
+      mounted = false;
+      authListener?.subscription?.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   /*
    * Keep refs synchronized with the current conversation.
@@ -294,12 +329,9 @@ useEffect(() => {
 
       const greeting = data.greeting || "Hello! Let's start talking.";
 
-      setMessages([
-        {
-          role: "assistant",
-          content: greeting,
-        },
-      ]);
+      const initialMessages = [{ role: "assistant", content: greeting }];
+      messagesRef.current = initialMessages;
+      setMessages(initialMessages);
 
       setLatestGuidance(null);
       sendingRef.current = false;
@@ -372,26 +404,13 @@ useEffect(() => {
       /*
        * Add user's message.
        */
-      setMessages((previous) => [
-        ...previous,
-        {
-          role: "user",
-          content: cleanMessage,
-        },
-      ]);
-
-      /*
-       * Add AI response.
-       */
-      if (data.reply) {
-        setMessages((previous) => [
-          ...previous,
-          {
-            role: "assistant",
-            content: data.reply,
-          },
-        ]);
-      }
+      const nextMessages = [
+        ...messagesRef.current,
+        { role: "user", content: cleanMessage },
+        ...(data.reply ? [{ role: "assistant", content: data.reply }] : []),
+      ];
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
 
       /*
        * Store correction / suggestion / tip.
@@ -418,14 +437,15 @@ useEffect(() => {
     } catch (error) {
       console.error("Send message error:", error);
 
-      setMessages((previous) => [
-        ...previous,
+      const errorMessages = [
+        ...messagesRef.current,
         {
           role: "assistant",
-          content:
-            "I couldn't connect to the AI right now. Please try again.",
+          content: "I couldn't connect to the AI right now. Please try again.",
         },
-      ]);
+      ];
+      messagesRef.current = errorMessages;
+      setMessages(errorMessages);
     } finally {
       sendingRef.current = false;
       setSending(false);
@@ -582,6 +602,41 @@ useEffect(() => {
     setListening(false);
 
     if (activeSessionId && activeMode) {
+      // Save the transcript before clearing the live conversation.
+      if (!savedSessionIdsRef.current.has(activeSessionId)) {
+        try {
+          const transcriptMessages = messagesRef.current || [];
+          if (transcriptMessages.length > 0 && currentUser) {
+            const firstUserMessage = transcriptMessages.find(
+              (item) => item.role === "user" && item.content
+            );
+            const modeTitle = moods.find((item) => item.id === activeMode)?.title || activeMode;
+            const title = firstUserMessage
+              ? `${modeTitle}: ${String(firstUserMessage.content).trim().slice(0, 70)}`
+              : `${modeTitle} conversation`;
+
+            const { error: saveError } = await supabase
+              .from("conversation_history")
+              .insert({
+                user_id: currentUser.id,
+                session_id: activeSessionId,
+                mode: activeMode,
+                title,
+                messages: transcriptMessages,
+                ended_at: new Date().toISOString(),
+              });
+
+            if (saveError) throw saveError;
+            savedSessionIdsRef.current.add(activeSessionId);
+          } else if (!currentUser) {
+            alert("You need to be signed in to save conversation history. This conversation will end without being saved.");
+          }
+        } catch (saveError) {
+          console.error("Save conversation history error:", saveError);
+          alert("Your conversation ended, but its history could not be saved. Please check your connection and Supabase setup.");
+        }
+      }
+
       try {
         await fetch(`${API_BASE_URL}/api/conversation/end`, {
           method: "POST",
@@ -604,6 +659,7 @@ useEffect(() => {
     setSessionId(null);
     setConversationMode(null);
     setMessages([]);
+    messagesRef.current = [];
     setTranscript("");
     setLatestGuidance(null);
     setSending(false);
@@ -614,6 +670,148 @@ useEffect(() => {
     sendingRef.current = false;
     transcriptRef.current = "";
     submittedTranscriptRef.current = "";
+  }
+
+  async function loadHistory() {
+    if (!currentUser) {
+      setHistoryError("Please sign in to view your saved conversations.");
+      setHistoryItems([]);
+      return;
+    }
+
+    setHistoryLoading(true);
+    setHistoryError("");
+    setSelectedHistory(null);
+
+    const { data, error } = await supabase
+      .from("conversation_history")
+      .select("id, session_id, mode, title, messages, created_at, ended_at")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Load conversation history error:", error);
+      setHistoryError("Couldn't load your history. Check the Supabase table and Row Level Security policies, then try again.");
+      setHistoryItems([]);
+    } else {
+      setHistoryItems(data || []);
+    }
+    setHistoryLoading(false);
+  }
+
+  async function deleteHistoryItem(item) {
+    const confirmed = window.confirm(`Delete “${item.title || "this conversation"}” from your history? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setHistoryBusyId(item.id);
+    const { error } = await supabase
+      .from("conversation_history")
+      .delete()
+      .eq("id", item.id);
+
+    if (error) {
+      console.error("Delete conversation history error:", error);
+      alert("Couldn't delete this conversation. Please try again.");
+    } else {
+      setHistoryItems((items) => items.filter((entry) => entry.id !== item.id));
+      if (selectedHistory?.id === item.id) setSelectedHistory(null);
+    }
+    setHistoryBusyId(null);
+  }
+
+  function openHistory() {
+    setScreen("history");
+    loadHistory();
+  }
+
+  function returnHome() {
+    setSelectedHistory(null);
+    setScreen("home");
+  }
+
+  /*
+   * SAVED CONVERSATION HISTORY SCREEN
+   */
+  if (screen === "history") {
+    return (
+      <div className="app-shell">
+        <div ref={mouseGlowRef} className="mouse-glow" />
+        <header className="topbar">
+          <div className="brand">
+            <span className="brand-mark">T</span>
+            <span>Talkative AI</span>
+          </div>
+          <div className="history-actions">
+            <button className="history-button" onClick={returnHome}>← Back to home</button>
+            <button className="history-button" onClick={loadHistory} disabled={historyLoading}>↻ Refresh</button>
+          </div>
+        </header>
+
+        <main className="home-page history-section">
+          <div className="history-heading">
+            <div>
+              <p className="eyebrow">YOUR PROGRESS</p>
+              <h1>Conversation <span className="gradient-text">history.</span></h1>
+              <p>Review previous practice sessions and the conversations you completed.</p>
+            </div>
+          </div>
+
+          {historyLoading && <div className="history-empty">Loading your saved conversations…</div>}
+          {!historyLoading && historyError && <div className="history-error">{historyError}</div>}
+          {!historyLoading && !historyError && historyItems.length === 0 && (
+            <div className="history-empty">
+              <h3>No saved conversations yet</h3>
+              <p>Complete a practice conversation and press End to save its transcript here.</p>
+            </div>
+          )}
+
+          {!historyLoading && !historyError && historyItems.length > 0 && (
+            <div className="history-list">
+              {historyItems.map((item) => {
+                const modeTitle = moods.find((mood) => mood.id === item.mode)?.title || item.mode;
+                const itemMessages = Array.isArray(item.messages) ? item.messages : [];
+                const preview = itemMessages.find((message) => message.role === "user")?.content || "No user messages in this session.";
+                return (
+                  <article className="history-card" key={item.id}>
+                    <h3>{item.title || `${modeTitle} conversation`}</h3>
+                    <div className="history-meta">
+                      <div>Mode: {modeTitle}</div>
+                      <div>{item.created_at ? new Date(item.created_at).toLocaleString() : "Date unavailable"}</div>
+                      <div>{itemMessages.length} messages</div>
+                    </div>
+                    <p className="history-preview">{String(preview).slice(0, 180)}{String(preview).length > 180 ? "…" : ""}</p>
+                    <div className="history-card-actions">
+                      <button className="history-button" onClick={() => setSelectedHistory(item)}>View transcript</button>
+                      <button className="history-button" onClick={() => deleteHistoryItem(item)} disabled={historyBusyId === item.id}>{historyBusyId === item.id ? "Deleting…" : "Delete"}</button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+
+          {selectedHistory && (
+            <section className="history-detail">
+              <div className="history-heading">
+                <div>
+                  <p className="eyebrow">SAVED TRANSCRIPT</p>
+                  <h2>{selectedHistory.title || "Conversation transcript"}</h2>
+                  <p className="history-meta">Read-only transcript · {selectedHistory.created_at ? new Date(selectedHistory.created_at).toLocaleString() : "Date unavailable"}</p>
+                </div>
+                <button className="history-button" onClick={() => setSelectedHistory(null)}>Close transcript</button>
+              </div>
+              <div className="chat-window">
+                {(Array.isArray(selectedHistory.messages) ? selectedHistory.messages : []).map((message, index) => (
+                  <div className={`message-row ${message.role === "user" ? "user" : "assistant"}`} key={`${selectedHistory.id}-${index}`}>
+                    <div className="message-avatar">{message.role === "assistant" ? "✦" : "You"}</div>
+                    <div className="message-bubble">{message.content || ""}</div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </main>
+      </div>
+    );
   }
 
   /*
@@ -634,20 +832,12 @@ useEffect(() => {
             {selectedMood?.icon} {selectedMood?.title}
           </div>
 
-          <div className="topbar-actions">
-            <button
-              className="end-button"
-              onClick={endConversation}
-            >
-              End
-            </button>
-            <button
-              className="end-button logout-button"
-              onClick={onLogout}
-            >
-              Log out
-            </button>
-          </div>
+          <button
+            className="end-button"
+            onClick={endConversation}
+          >
+            End
+          </button>
         </header>
 
         <main className="conversation-page">
@@ -826,16 +1016,13 @@ useEffect(() => {
           <span>Talkative AI</span>
         </div>
 
-        <div className="topbar-status">
-          <span className="status-dot" />
-          AI conversation coach
+        <div className="history-actions">
+          <div className="topbar-status">
+            <span className="status-dot" />
+            AI conversation coach
+          </div>
+          <button className="history-button" onClick={openHistory}>History</button>
         </div>
-        <button
-          className="end-button logout-button"
-          onClick={onLogout}
-        >
-          Log out
-        </button>
       </header>
 
       <main className="home-page">
@@ -930,67 +1117,6 @@ useEffect(() => {
       </main>
     </div>
   );
-}
-
-function App() {
-  const [authLoading, setAuthLoading] = useState(true);
-  const [user, setUser] = useState(null);
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function loadSession() {
-      const { data, error } = await supabase.auth.getSession();
-
-      if (!mounted) return;
-
-      if (error) {
-        console.error("Session loading error:", error);
-      }
-
-      setUser(data?.session?.user ?? null);
-      setAuthLoading(false);
-    }
-
-    loadSession();
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (mounted) {
-        setUser(session?.user ?? null);
-        setAuthLoading(false);
-      }
-    });
-
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
-  }, []);
-
-  async function handleLogout() {
-    const { error } = await supabase.auth.signOut();
-
-    if (error) {
-      console.error("Logout error:", error);
-      alert("Unable to log out. Please try again.");
-    }
-  }
-
-  if (authLoading) {
-    return <div className="auth-loading">Loading Talkative AI...</div>;
-  }
-
-  if (!user) {
-    return (
-      <Auth
-        onAuthenticated={(session) => setUser(session?.user ?? null)}
-      />
-    );
-  }
-
-  return <TalkativeApp onLogout={handleLogout} />;
 }
 
 createRoot(document.getElementById("root")).render(
