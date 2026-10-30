@@ -557,22 +557,33 @@ function App() {
                   .slice(0, 70)}`
               : `${modeTitle} conversation`;
 
-            const { error: saveError } = await supabase
-              console.log("Attempting Supabase history insert:", {
-              userId: currentUser.id,
-              sessionId: activeSessionId,
-              mode: activeMode,
-              messages: transcriptMessages,
-              });
-              .from("conversation_history")
-              .insert({
-                user_id: currentUser.id,
-                session_id: activeSessionId,
-                mode: activeMode,
-                title,
-                messages: transcriptMessages,
-                ended_at: new Date().toISOString(),
-              });
+          
+console.log("Attempting Supabase history insert:", {
+  userId: currentUser.id,
+  sessionId: activeSessionId,
+  mode: activeMode,
+  messages: transcriptMessages,
+});
+
+const { error: saveError } = await supabase
+  .from("conversation_history")
+  .insert({
+    user_id: currentUser.id,
+    session_id: activeSessionId,
+    mode: activeMode,
+    title,
+    messages: transcriptMessages,
+    ended_at: new Date().toISOString(),
+  });
+
+if (saveError) {
+  console.error("Supabase insert failed:", saveError);
+  throw saveError;
+}
+
+console.log("Conversation history saved successfully!");
+savedSessionIdsRef.current.add(activeSessionId);
+
 
             if (saveError) throw saveError;
 
