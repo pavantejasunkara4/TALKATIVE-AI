@@ -531,6 +531,13 @@ function App() {
     setListening(false);
 
     if (activeSessionId && activeMode) {
+      console.log("HISTORY SAVE DEBUG:", {
+  activeSessionId,
+  activeMode,
+  currentUserId: currentUser?.id,
+  messageCount: messagesRef.current?.length,
+  alreadySaved: savedSessionIdsRef.current.has(activeSessionId),
+});
       if (!savedSessionIdsRef.current.has(activeSessionId)) {
         try {
           const transcriptMessages = messagesRef.current || [];
@@ -551,6 +558,12 @@ function App() {
               : `${modeTitle} conversation`;
 
             const { error: saveError } = await supabase
+              console.log("Attempting Supabase history insert:", {
+              userId: currentUser.id,
+              sessionId: activeSessionId,
+              mode: activeMode,
+              messages: transcriptMessages,
+              });
               .from("conversation_history")
               .insert({
                 user_id: currentUser.id,
