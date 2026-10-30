@@ -507,16 +507,130 @@ function App() {
   sendMessageRef.current = sendMessage;
 
   // End the session and save its transcript.
-  async function endConversation() {
-    const activeSessionId = sessionIdRef.current;
-    const activeMode = conversationModeRef.current;
+ 
+async function endConversation() {
+  const activeSessionId = sessionIdRef.current;
+  const activeMode = conversationModeRef.current;
 
-    conversationActiveRef.current = false;
+  conversationActiveRef.current = false;
 
-    if (speechRestartTimerRef.current) {
-      clearTimeout(speechRestartTimerRef.current);
-      speechRestartTimerRef.current = null;
+  if (speechRestartTimerRef.current) {
+    clearTimeout(speechRestartTimerRef.current);
+    speechRestartTimerRef.current = null;
+  }
+
+  window.speechSynthesis.cancel();
+  setSpeaking(false);
+
+  try {
+    recognitionRef.current?.stop();
+  } catch (error) {
+    console.debug("Recognition stop on end:", error);
+  }
+
+  recognitionActiveRef.current = false;
+  setListening(false);
+
+  if (activeSessionId && activeMode) {
+    console.log("HISTORY SAVE DEBUG:", {
+      activeSessionId,
+      activeMode,
+      currentUserId: currentUser?.id,
+      messageCount: messagesRef.current?.length,
+      alreadySaved: savedSessionIdsRef.current.has(activeSessionId),
+    });
+
+    if (!savedSessionIdsRef.current.has(activeSessionId)) {
+      try {
+        const transcriptMessages = messagesRef.current || [];
+
+        if (transcriptMessages.length > 0 && currentUser) {
+          const firstUserMessage = transcriptMessages.find(
+            (item) => item.role === "user" && item.content
+          );
+
+          const modeTitle =
+            moods.find((item) => item.id === activeMode)?.title ||
+            activeMode;
+
+          const title = firstUserMessage
+            ? `${modeTitle}: ${String(firstUserMessage.content)
+                .trim()
+                .slice(0, 70)}`
+            : `${modeTitle} conversation`;
+
+          console.log("Attempting Supabase history insert:", {
+            userId: currentUser.id,
+            sessionId: activeSessionId,
+            mode: activeMode,
+            messages: transcriptMessages,
+          });
+
+          const { error: saveError } = await supabase
+            .from("conversation_history")
+            .insert({
+              user_id: currentUser.id,
+              session_id: activeSessionId,
+              mode: activeMode,
+              title,
+              messages: transcriptMessages,
+              ended_at: new Date().toISOString(),
+            });
+
+          if (saveError) {
+            console.error("Supabase insert failed:", saveError);
+            throw saveError;
+          }
+
+          console.log("Conversation history saved successfully!");
+          savedSessionIdsRef.current.add(activeSessionId);
+        } else if (!currentUser) {
+          alert(
+            "You need to sign in to save conversation history."
+          );
+        } else {
+          console.warn("No messages available to save.");
+        }
+      } catch (error) {
+        console.error("Save conversation history error:", error);
+        alert(
+          "Your conversation ended, but its history could not be saved. Check the browser console."
+        );
+      }
     }
+
+    try {
+      await fetch(`${API_BASE_URL}/api/conversation/end`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: activeSessionId,
+          mode: activeMode,
+        }),
+      });
+    } catch (error) {
+      console.error("End conversation error:", error);
+    }
+  }
+
+  sessionStorage.removeItem("talkative_session_id");
+  sessionStorage.removeItem("talkative_mode");
+
+  setSessionId(null);
+  setConversationMode(null);
+  setMessages([]);
+  messagesRef.current = [];
+  setTranscript("");
+  transcriptRef.current = "";
+  submittedTranscriptRef.current = "";
+  setLatestGuidance(null);
+  setSending(false);
+  sendingRef.current = false;
+  setScreen("home");
+
+  sessionIdRef.current = null;
+  conversationModeRef.current = null;
+}
 
     window.speechSynthesis.cancel();
     setSpeaking(false);
